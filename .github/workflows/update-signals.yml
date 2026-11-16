@@ -1,0 +1,76 @@
+
+name: Sirio Crypto Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,37 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sirio-signals
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Query Sirio Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --silent --show-error \
+            --retry 2 \
+            --max-time 25 \
+            "https://sirio.8fmc2bc5mc.workers.dev/?ca=ANPikG3a5qKJjHeeNjDmjZvDPPVtQ8B1ii6unvg3pump" \
+            -o response.json
+
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+
+          with open("response.json") as f:
+              data = json.load(f)
+
+          expected = "ANPikG3a5qKJjHeeNjDmjZvDPPVtQ8B1ii6unvg3pump"
+
+          if data.get("ca") != expected:
+              raise ValueError("CA mismatch")
+
+          if data.get("errors"):
+              raise ValueError(str(data["errors"]))
+
+          if not data.get("tweet_found"):
+              raise ValueError("Tweet not found")
+
+          data["version"] = "Sirio V1.6"
+          data["status"] = "updated"
+          data["updated_at"] = datetime.now(
+              timezone.utc
+          ).isoformat()
+
+          with open("signals.json", "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+          PY
+
+      - name: Save results
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add signals.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Update Sirio signals"
+            git push
+          fi
