@@ -1,8 +1,12 @@
-
 name: Sirio Crypto Update
 
 on:
   workflow_dispatch:
+    inputs:
+      ca:
+        description: "Solana token contract address"
+        required: true
+        type: string
   schedule:
     - cron: "7,37 * * * *"
 
@@ -16,61 +20,55 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download repository
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Query Sirio Worker
+      - name: Fetch token metadata
+        env:
+          INPUT_CA: ${{ inputs.ca }}
         shell: bash
         run: |
           set -euo pipefail
-
-          curl --fail --silent --show-error \
-            --retry 2 \
-            --max-time 25 \
-            "https://sirio.8fmc2bc5mc.workers.dev/?ca=ANPikG3a5qKJjHeeNjDmjZvDPPVtQ8B1ii6unvg3pump" \
-            -o response.json
-
           python3 - <<'PY'
-          import json
+          import json, os, re, urllib.parse, urllib.request
           from datetime import datetime, timezone
 
-          with open("response.json") as f:
-              data = json.load(f)
-
-          expected = "ANPikG3a5qKJjHeeNjDmjZvDPPVtQ8B1ii6unvg3pump"
-
-          if data.get("ca") != expected:
-              raise ValueError("CA mismatch")
-
-          if data.get("errors"):
-              raise ValueError(str(data["errors"]))
-
-          if not data.get("tweet_found"):
-              raise ValueError("Tweet not found")
-
-          data["version"] = "Sirio V1.6"
-          data["status"] = "updated"
-          data["updated_at"] = datetime.now(
-              timezone.utc
-          ).isoformat()
-
-          with open("signals.json", "w") as f:
-              json.dump(data, f, indent=2)
-              f.write("\n")
+          default_ca = 'ANPikG3a5qKJjHeeNjDmjZvDPPVtQ8B1ii6unvg3pump'
+          try:
+              with open('signals.json', encoding='utf-8') as f:
+                  old = json.load(f)
+              previous_ca = old.get('ca', default_ca)
+          except (OSError, ValueError):
+              previous_ca = default_ca
+          ca = (os.environ.get('INPUT_CA') or '').strip() or previous_ca
+          if not re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]{32,44}', ca):
+              raise ValueError('Invalid Solana CA format')
+          url = 'https://sirio.8fmc2bc5mc.workers.dev/?' + urllib.parse.urlencode({'ca': ca})
+          req = urllib.request.Request(url, headers={'User-Agent': 'SirioCrypto/1.7'})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              data = json.load(response)
+          if data.get('ca') != ca:
+              raise ValueError('Worker returned a different CA')
+          if data.get('errors'):
+              raise ValueError('Worker errors: ' + str(data['errors']))
+          # No tweet is a valid finding; do not invent one.
+          data['version'] = 'Sirio V1.7'
+          data['status'] = 'updated'
+          data['updated_at'] = datetime.now(timezone.utc).isoformat()
+          with open('signals.json', 'w', encoding='utf-8') as f:
+              json.dump(data, f, indent=2, ensure_ascii=False)
+              f.write('\n')
+          print('Updated CA:', ca, 'tweet_found:', data.get('tweet_found'))
           PY
-
-      - name: Save results
+      - name: Commit results
         shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add signals.json
-
           if ! git diff --cached --quiet; then
             git commit -m "Update Sirio signals"
-            git push
+            git pull --rebase origin main
+            git push origin HEAD:main
           fi
